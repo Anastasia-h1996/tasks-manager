@@ -9,7 +9,7 @@ function Tasks() {
     const navigate = useNavigate()
 
     const statuses = [
-        { value: 'pending', label: '📋 Поставлена', color: '#9e9e9e' },
+        { value: 'pending', label: '📋 Поставлена !', color: '#9e9e9e' },
         { value: 'in_progress', label: '🏗️ В работе', color: '#ff9800' },
         { value: 'review', label: '🔍 На проверке', color: '#2196f3' },
         { value: 'done', label: '✅ Выполнена', color: '#4caf50' }
