@@ -44,22 +44,25 @@ function Tasks() {
     async function getUsername(userId) {
         // Проверяем кэш
         if (usernames[userId]) return usernames[userId]
-        
+
+        if (userId === currentUserId) {
+            setUsernames(prev => ({ ...prev, [userId]: 'Вы' }))
+            return 'Вы'
+        }
+
         try {
+            // Запрашиваем имя напрямую из auth.users
             const { data, error } = await supabase
-                .from('profiles')
-                .select('username')
-                .eq('id', userId)
-                .single()
-            
-            if (!error && data?.username) {
-                setUsernames(prev => ({ ...prev, [userId]: data.username }))
-                return data.username
+                .rpc('get_user_username', { user_id: userId })
+
+            if (!error && data) {
+                setUsernames(prev => ({ ...prev, [userId]: data }))
+                return data
             }
         } catch (e) {
-            // Если таблицы profiles нет, пробуем другой способ
+            console.error('Ошибка получения имени:', e)
         }
-        
+
         return 'Пользователь'
     }
 
