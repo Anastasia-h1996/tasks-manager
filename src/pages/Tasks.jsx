@@ -6,17 +6,70 @@ function Tasks() {
     const [tasks, setTasks] = useState([])
     const [newTaskTitle, setNewTaskTitle] = useState('')
     const [loading, setLoading] = useState(false)
+    const [currentUserId, setCurrentUserId] = useState(null)
+    const [expandedTasks, setExpandedTasks] = useState({})
+    const [usernames, setUsernames] = useState({}) // Кэш имён пользователей
     const navigate = useNavigate()
 
     const statuses = [
-        { value: 'pending', label: '📋 Поставлена !', color: '#9e9e9e' },
+        { value: 'pending', label: '📋 Поставлена', color: '#9e9e9e' },
         { value: 'in_progress', label: '🏗️ В работе', color: '#ff9800' },
         { value: 'review', label: '🔍 На проверке', color: '#2196f3' },
         { value: 'done', label: '✅ Выполнена', color: '#4caf50' }
     ]
 
+    // Функция обрезки текста (50 символов для краткого вида)
+    function truncateText(text) {
+        const maxLength = 50
+        if (!text) return ''
+        if (text.length <= maxLength) return text
+        return text.slice(0, maxLength)
+    }
+
+    // Получить текст для отображения (развёрнутый или сокращённый)
+    function getDisplayText(task) {
+        if (expandedTasks[task.id]) return task.title
+        return truncateText(task.title)
+    }
+
+    // Переключить состояние развёрнутости задачи
+    function toggleExpand(taskId) {
+        setExpandedTasks(prev => ({
+            ...prev,
+            [taskId]: !prev[taskId]
+        }))
+    }
+
+    // Получить имя пользователя по ID
+    async function getUsername(userId) {
+        // Проверяем кэш
+        if (usernames[userId]) return usernames[userId]
+        
+        try {
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('username')
+                .eq('id', userId)
+                .single()
+            
+            if (!error && data?.username) {
+                setUsernames(prev => ({ ...prev, [userId]: data.username }))
+                return data.username
+            }
+        } catch (e) {
+            // Если таблицы profiles нет, пробуем другой способ
+        }
+        
+        return 'Пользователь'
+    }
+
     async function fetchTasks() {
         setLoading(true)
+
+        const { data: { user } } = await supabase.auth.getUser()
+        setCurrentUserId(user.id)
+
+        // Простой запрос без JOIN
         const { data, error } = await supabase
             .from('tasks')
             .select('*')
@@ -25,6 +78,11 @@ function Tasks() {
         if (error) {
             console.error('Ошибка загрузки:', error)
         } else {
+            // Загружаем имена для всех пользователей
+            const userIds = [...new Set(data.map(task => task.user_id))]
+            for (const userId of userIds) {
+                await getUsername(userId)
+            }
             setTasks(data)
         }
         setLoading(false)
@@ -33,20 +91,10 @@ function Tasks() {
     async function addTask() {
         if (!newTaskTitle.trim()) return
 
-        console.log('1. Начинаем добавление задачи:', newTaskTitle)
-
-        // Получаем текущего пользователя
         const { data: { user }, error: userError } = await supabase.auth.getUser()
 
-        console.log('2. Текущий пользователь:', user)
-
-        if (userError) {
+        if (userError || !user) {
             console.error('Ошибка получения пользователя:', userError)
-            return
-        }
-
-        if (!user) {
-            console.error('Пользователь не найден!')
             return
         }
 
@@ -56,20 +104,23 @@ function Tasks() {
                 title: newTaskTitle,
                 user_id: user.id
             }])
-            .select()  // ← добавили .select() чтобы увидеть результат
-
-        console.log('3. Результат вставки:', { data, error })
+            .select()
 
         if (error) {
             console.error('Ошибка добавления:', error)
         } else {
-            console.log('Успешно добавлено:', data)
             setNewTaskTitle('')
             fetchTasks()
         }
     }
 
     async function updateStatus(id, newStatus) {
+        const task = tasks.find(t => t.id === id)
+        if (task && task.user_id !== currentUserId) {
+            console.warn('Нельзя изменять чужую задачу')
+            return
+        }
+
         const { error } = await supabase
             .from('tasks')
             .update({ status: newStatus })
@@ -83,6 +134,12 @@ function Tasks() {
     }
 
     async function deleteTask(id) {
+        const task = tasks.find(t => t.id === id)
+        if (task && task.user_id !== currentUserId) {
+            console.warn('Нельзя удалять чужую задачу')
+            return
+        }
+
         const { error } = await supabase
             .from('tasks')
             .delete()
@@ -113,56 +170,119 @@ function Tasks() {
         <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h1>Менеджер задач 💩</h1>
-                <button onClick={handleLogout} style={styles.logoutButton}>
-                    🚪 Выйти
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    <button onClick={() => navigate('/profile')} style={styles.profileButton}>
+                        👤 Профиль
+                    </button>
+                    <button onClick={handleLogout} style={styles.logoutButton}>
+                        🚪 Выйти
+                    </button>
+                </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '30px' }}>
-                <input
-                    type="text"
-                    value={newTaskTitle}
-                    onChange={(e) => setNewTaskTitle(e.target.value)}
-                    placeholder="Что нужно сделать?"
-                    style={styles.input}
-                    onKeyPress={(e) => e.key === 'Enter' && addTask()}
-                />
-                <button onClick={addTask} style={styles.addButton}>
-                    ➕ Добавить
-                </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '30px' }}>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    <input
+                        type="text"
+                        value={newTaskTitle}
+                        onChange={(e) => {
+                            const value = e.target.value.slice(0, 150)
+                            setNewTaskTitle(value)
+                        }}
+                        placeholder="Что нужно сделать?"
+                        style={styles.input}
+                        onKeyPress={(e) => e.key === 'Enter' && addTask()}
+                        maxLength={150}
+                    />
+                    <button onClick={addTask} style={styles.addButton}>
+                        ➕ Добавить
+                    </button>
+                </div>
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '5px' }}>
+                    {newTaskTitle.length}/150 символов
+                    {newTaskTitle.length === 150 && <span style={{ color: 'orange', marginLeft: '8px' }}>⚠️ Лимит</span>}
+                </div>
             </div>
 
             {loading && <p>Загрузка...</p>}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {tasks.map(task => (
-                    <div key={task.id} style={{ ...styles.taskCard, borderLeft: `4px solid ${getStatusColor(task.status)}` }}>
-                        <div style={{ flex: 2 }}>
-                            <div style={{ textDecoration: task.status === 'done' ? 'line-through' : 'none', fontWeight: 'bold' }}>
-                                {task.title}
-                            </div>
-                            <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
-                                {task.created_at ? new Date(task.created_at).toLocaleString() : 'только что'}
-                            </div>
-                        </div>
+                {tasks.map(task => {
+                    const isOwnTask = task.user_id === currentUserId
+                    const isExpanded = expandedTasks[task.id]
+                    const needsExpand = task.title && task.title.length > 50
+                    const authorName = usernames[task.user_id] || (isOwnTask ? 'Вы' : 'Пользователь')
 
-                        <select
-                            value={task.status || 'pending'}
-                            onChange={(e) => updateStatus(task.id, e.target.value)}
-                            style={{ ...styles.select, borderColor: getStatusColor(task.status) }}
+                    return (
+                        <div
+                            key={task.id}
+                            style={{
+                                ...styles.taskCard,
+                                borderLeft: `4px solid ${getStatusColor(task.status)}`,
+                                backgroundColor: isOwnTask ? '#f5f5f5' : '#fff3e0'
+                            }}
                         >
-                            {statuses.map(status => (
-                                <option key={status.value} value={status.value}>
-                                    {status.label}
-                                </option>
-                            ))}
-                        </select>
+                            <div style={{ flex: 2, minWidth: 0 }}>
+                                <div style={{
+                                    textDecoration: task.status === 'done' ? 'line-through' : 'none',
+                                    fontWeight: 'bold',
+                                    wordWrap: 'break-word',
+                                    wordBreak: 'break-all',
+                                    overflowWrap: 'break-word',
+                                    maxWidth: '100%'
+                                }}>
+                                    {getDisplayText(task)}
+                                    {needsExpand && (
+                                        <span
+                                            onClick={() => toggleExpand(task.id)}
+                                            style={{
+                                                fontSize: '12px',
+                                                color: '#2196f3',
+                                                cursor: 'pointer',
+                                                marginLeft: '8px',
+                                                textDecoration: 'none',
+                                                whiteSpace: 'nowrap'
+                                            }}
+                                        >
+                                            {isExpanded ? '🔼 свернуть' : '📖 развернуть'}
+                                        </span>
+                                    )}
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
+                                    {task.created_at ? new Date(task.created_at).toLocaleString() : 'только что'}
+                                    <span style={{ marginLeft: '10px' }}>
+                                        {isOwnTask ? (
+                                            <span style={{ color: '#4caf50' }}>👤 Вы</span>
+                                        ) : (
+                                            <span style={{ color: '#ff9800' }}>👤 {authorName}</span>
+                                        )}
+                                    </span>
+                                </div>
+                            </div>
 
-                        <button onClick={() => deleteTask(task.id)} style={styles.deleteButton}>
-                            🗑️
-                        </button>
-                    </div>
-                ))}
+                            <select
+                                value={task.status || 'pending'}
+                                onChange={(e) => updateStatus(task.id, e.target.value)}
+                                disabled={!isOwnTask}
+                                style={{ ...styles.select, borderColor: getStatusColor(task.status) }}
+                            >
+                                {statuses.map(status => (
+                                    <option key={status.value} value={status.value}>
+                                        {status.label}
+                                    </option>
+                                ))}
+                            </select>
+
+                            <button
+                                onClick={() => deleteTask(task.id)}
+                                disabled={!isOwnTask}
+                                style={{ ...styles.deleteButton, opacity: !isOwnTask ? 0.5 : 1 }}
+                            >
+                                🗑️
+                            </button>
+                        </div>
+                    )
+                })}
             </div>
 
             {tasks.length === 0 && !loading && (
@@ -175,6 +295,14 @@ function Tasks() {
 }
 
 const styles = {
+    profileButton: {
+        padding: '8px 16px',
+        backgroundColor: '#2196f3',
+        color: 'white',
+        border: 'none',
+        borderRadius: '4px',
+        cursor: 'pointer'
+    },
     logoutButton: {
         padding: '8px 16px',
         backgroundColor: '#ff4444',
@@ -203,7 +331,6 @@ const styles = {
         alignItems: 'center',
         gap: '12px',
         padding: '15px',
-        backgroundColor: '#f5f5f5',
         borderRadius: '8px'
     },
     select: {
